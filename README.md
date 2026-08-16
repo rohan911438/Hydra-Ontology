@@ -43,10 +43,17 @@ not hidden in application logic.
   edges (with confidence + evidence). Low confidence → linked by
   `SUGGESTED_SAME_AS` instead of being merged. Nothing is force-merged.
 - **Conflict detection**: every status claim becomes a `Claim` node
-  (`-[:ABOUT]->` the entity it's about). Claims from different sources that
-  land in different status buckets (resolved vs. unresolved) are checked by
-  Gemini for a genuine contradiction (not just normal progression); confirmed
-  ones get a `CONTRADICTS` edge with a reason.
+  (`-[:ABOUT]->` the entity it's *actually about* — a Slack thread saying
+  "SUP-4127 is still broken" attaches its claim to that ticket, not to the
+  thread itself, via `status_claim.about_ref`; without this, cross-source
+  claims never share an entity to disagree about in the first place, which
+  is what an earlier version of this pipeline did — confirmed live: 0/543
+  claims shared an entity across sources before this field existed). Claims
+  from different sources that land in different status buckets (resolved
+  vs. unresolved) are checked by Gemini for a genuine contradiction (not
+  just normal progression); confirmed ones get a `CONTRADICTS` edge with a
+  reason. Example found live in this dataset: a GitHub PR marked `done`
+  while a Slack thread says it's `open` for the same `PR-8342`.
 - **Query layer**: a small fixed set of Cypher templates — lookup,
   conflict-aware status, multi-hop (via HydraDB's native `algo.SSpaths`
   procedure), conflict query, and merge-evidence — dispatched to by an
@@ -193,6 +200,41 @@ container, clear `.hydradb/store` and `.hydradb/cache`, and start it again.
 Type a question, or `demo` to run the four showcase questions (multi-hop,
 merge evidence, a surfaced conflict, a correct abstention).
 
+## Example run
+
+Real output from `scripts/smoke.py` against the committed sample/cache —
+every line below is a live Cypher result, not scripted:
+
+```
+=== multi-hop across sources ===
+Q: Who touched the fix connected to what Daniel Carter reported?
+  [template: multi_hop]
+  --- Cypher run ---
+  CALL algo.SSpaths({sourceNode: $src, relTypes: [...], relDirection: 'both', maxLen: 5, ...}) YIELD path RETURN path
+  Source person: Daniel Carter (jira/Daniel Carter)
+    -> Allison Grant (jira/Allison Grant) via REPORTED -> ASSIGNED_TO
+
+=== entity-merge evidence ===
+Q: Why were the identities behind Ibrahim Khan merged, if at all?
+  [template: merge_evidence]
+  Person: Ibrahim Khan (github/Ibrahim Khan)
+  Merged (high-confidence) into canonical identity:
+    - canonical='Ibrahim Khan' includes github/Ibrahim Khan confidence=0.85:
+      The identical names and co-occurrence in the same discussion thread
+      strongly suggest they are the same individual.
+    - canonical='Ibrahim Khan' includes slack/Ibrahim Khan confidence=0.85: [same reason]
+
+=== surfaced conflict ===
+Q: Is there disagreement about the status of PR-8342?
+  [template: conflict]
+    - slack='open' vs github='done': A work item cannot be simultaneously open and done.
+
+=== correct abstention ===
+Q: What is the status of TICKET-DOES-NOT-EXIST-999?
+  [template: lookup]
+  => NOT FOUND IN DATA (no supporting path/entity in the graph). Abstaining rather than guessing.
+```
+
 ## Cypher subset note
 
 HydraDB implements a deliberately narrow OpenCypher subset, and the deployed
@@ -221,6 +263,20 @@ building this:
 - `DETACH DELETE` is expensive on this engine (roughly 1+ second per node,
   confirmed live) — see `db.wipe_graph()`'s docstring for why the pipeline
   doesn't wipe by default.
+- Round-tripping one `UNWIND` row at a time cost ~1.5s/row; batching many
+  rows into one `UNWIND` call cut that to ~0.1s/row (~15x), which is the
+  difference between the full ~550-document ingest finishing in minutes vs.
+  hours. `write_graph.GraphBatch` stages every node/edge and flushes in a
+  handful of large calls instead of one round trip per item — capped at 500
+  rows/call, since the server's admission control rejects a single batch
+  above ~1,024 rows.
+- This server's local-filesystem storage backend logs a recurring
+  garbage-collection failure (`PutMode::Update` unimplemented for
+  `LocalFileSystem`) that, over a long write-heavy session, eventually drops
+  the Bolt connection outright (`ServiceUnavailable`/`SessionExpired`) —
+  unrelated to the graph data itself. `db.run_query()` closes the stale
+  driver and retries with a fresh connection rather than crashing the
+  pipeline mid-batch.
 
 All of this was worked out empirically against a running HydraDB server, not
 guessed from documentation — see `src/hydra_ontology/db.py` for the primitives
