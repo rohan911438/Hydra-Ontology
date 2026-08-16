@@ -9,13 +9,21 @@ __pycache__/
 venv/
 *.egg-info/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # HydraDB local data
 .hydradb/
 hydradb-data/
 
-# Dataset raw downloads (large, re-downloadable)
+# Dataset raw downloads (large, re-downloadable via scripts/download_dataset.py)
 data/raw/
+
+# Editor / tool session state (not part of the project)
+.claude/
+.vscode/
+.idea/
+*.log
 
 # OS
 .DS_Store
