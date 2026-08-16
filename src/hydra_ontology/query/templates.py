@@ -261,11 +261,23 @@ def _looks_like_person_name(name: str) -> bool:
 
 
 def discover_demo_anchors() -> dict:
-    reporter_candidates = run_query("MATCH (p:Person)-[:REPORTED]->(e) RETURN p.name AS name LIMIT 20")
+    reporter_candidates = run_query("MATCH (p:Person)-[:REPORTED]->(e) RETURN DISTINCT p.name AS name LIMIT 30")
     if not reporter_candidates:
-        reporter_candidates = run_query("MATCH (p:Person)-[:AUTHORED]->(e) RETURN p.name AS name LIMIT 20")
-    reporter = next((r for r in reporter_candidates if _looks_like_person_name(r["name"])), None)
-    reporter = [reporter] if reporter else reporter_candidates[:1]
+        reporter_candidates = run_query("MATCH (p:Person)-[:AUTHORED]->(e) RETURN DISTINCT p.name AS name LIMIT 30")
+    person_like = [r for r in reporter_candidates if _looks_like_person_name(r["name"])] or reporter_candidates
+    # Prefer a candidate whose algo.SSpaths call actually finds a connected
+    # multi-hop path (confirmed live: plenty exist, e.g. a REPORTED ->
+    # MENTIONS -> MENTIONS -> REVIEWED_BY chain) -- picking blindly from the
+    # first few graph-order results too often lands on someone with no
+    # onward connections, and abstention is only the interesting demo
+    # outcome when there genuinely isn't a path, not when there's one that
+    # just wasn't looked for.
+    reporter = None
+    for cand in person_like[:15]:
+        if who_touched_the_fix(cand["name"]).get("found"):
+            reporter = cand
+            break
+    reporter = [reporter] if reporter else person_like[:1]
 
     merged = run_query(
         "MATCH (c:Person {canonical: true})-[:MERGED_FROM]->(p:Person) "
