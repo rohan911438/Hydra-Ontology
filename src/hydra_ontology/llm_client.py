@@ -4,12 +4,20 @@ without touching extraction/resolution/conflict/query logic."""
 from __future__ import annotations
 
 import json
+import logging
 import re
 import socket
 import threading
 import time
 
 from .config import CONFIG
+
+# The google-genai SDK logs a one-time warning on the direct
+# generate_content() path recommending Chat.send_message() instead -- noise
+# for this project's use case (one-shot JSON extraction calls, not a chat
+# session), and it interleaves with this module's own printed Cypher/output
+# in the CLI. Quiet that specific logger only, not warnings generally.
+logging.getLogger("google_genai.models").setLevel(logging.ERROR)
 
 _client = None
 
