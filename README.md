@@ -1,4 +1,4 @@
-# Hack Hydra Track 1 — Enterprise Context & Ontology
+# Hydra Ontology — Cross-Source Enterprise Knowledge Graph
 
 Turns messy, multi-source enterprise data (Slack, GitHub, Jira) into a
 queryable ontology in [HydraDB](https://github.com/hydra-db/hydradb), then
