@@ -8,6 +8,8 @@ against a real HydraDB server, not application-side fakery.
 
 Built for Hack Hydra (Aug 12–20, 2026), Track 1.
 
+**Demo video:** https://youtu.be/pfRjzIrsj4o
+
 **Contents:** [The problem](#the-problem) ·
 [What was built](#what-was-built) ·
 [Architecture](#architecture) ·
