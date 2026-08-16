@@ -16,6 +16,7 @@ Built for Hack Hydra (Aug 12–20, 2026), Track 1.
 [Design decisions](#design-decisions) ·
 [Dataset](#dataset) · [LLM](#llm) ·
 [How to run](#how-to-run) · [Example run](#example-run) ·
+[Benchmark results](#benchmark-results) ·
 [Cypher subset note](#cypher-subset-note) · [Tests](#tests) ·
 [Credits](#credits)
 
@@ -369,6 +370,53 @@ Q: What is the status of TICKET-DOES-NOT-EXIST-999?
   [template: lookup]
   => NOT FOUND IN DATA (no supporting path/entity in the graph). Abstaining rather than guessing.
 ```
+
+## Benchmark results
+
+Real run against EnterpriseRAG-Bench's official question set
+(`onyx-dot-app/EnterpriseRAG-Bench` v1.0.0), executed by
+[`scripts/benchmark.py`](scripts/benchmark.py) — reproduce with
+`.venv/Scripts/python scripts/benchmark.py`. Raw per-question output is
+committed at
+[`data/extracted/benchmark_results.jsonl`](data/extracted/benchmark_results.jsonl).
+
+| Category | Questions attempted | Correct |
+|---|---|---|
+| `info_not_found` (correct abstention) | 20 | 20 |
+
+**Methodology, including the negative result.** EnterpriseRAG-Bench's 600
+official questions (`questions.jsonl` + `extra_questions.jsonl`) are graded
+against `expected_doc_ids` drawn from the benchmark's full released corpus
+(~500K documents across 9 source types). This project ingests a
+Slack/GitHub/Jira sample, so before writing any benchmark code we checked
+how many official questions our ingested data could even fairly answer:
+194 questions have `source_types` that are a subset of
+`{slack, github, jira}`. We then downloaded the complete released GitHub
+(8,052 docs) and Jira (6,120 docs) slices plus a Slack slice — 19,171
+documents, 100% of the GitHub and Jira source types — and checked how many
+of those 194 questions' `expected_doc_ids` appear anywhere in that set.
+
+**Zero.** None of the 194 in-scope content questions have their grounding
+documents in the per-source-type slice files this project could practically
+download. We're reporting that rather than quietly dropping it, since it's
+a real finding about the benchmark's released slices, not a gap in this
+project's pipeline — grading those 194 against our sample would not be a
+fair or meaningful test either way, so we didn't fabricate a number for
+them.
+
+`info_not_found` is different: its 20 questions are source-agnostic by
+design, with empty `expected_doc_ids` — the correct answer is that no
+document anywhere answers them. That makes it the one category gradable
+fairly regardless of which subset we ingested, and it maps directly onto
+this project's "correct abstention" pillar. Grading: each question was run
+through the live `nl_router.answer()` (the same code path the CLI's `demo`
+and REPL use, hitting real HydraDB Cypher — nothing benchmark-only). An
+answer counts as correct when the router abstains (`found: False`) instead
+of returning an unrelated real entity's data as if it answered the
+question. Result: **20/20**, achieved because none of these questions
+contain a ticket/PR key or a person name that resolves to anything in our
+graph, so the router correctly finds nothing to anchor on and abstains —
+the same abstention path shown live in the "Example run" section above.
 
 ## Cypher subset note
 
