@@ -24,9 +24,11 @@ shape of write. Reads are unaffected: plain MATCH on arbitrary properties
 from __future__ import annotations
 
 import hashlib
+import time
 from typing import Any
 
 from neo4j import GraphDatabase
+from neo4j.exceptions import ServiceUnavailable, SessionExpired
 
 from .config import CONFIG
 
@@ -58,10 +60,24 @@ def close_driver() -> None:
         _driver = None
 
 
-def run_query(cypher: str, **params: Any) -> list[dict]:
-    with get_driver().session(database=CONFIG.hydra_database) as session:
-        result = session.run(cypher, **params)
-        return [record.data() for record in result]
+def run_query(cypher: str, *, max_retries: int = 4, **params: Any) -> list[dict]:
+    """Confirmed live: this server intermittently drops the Bolt connection
+    mid-session during long write-heavy runs (a recurring GC failure on the
+    local-filesystem storage backend eventually leaves the connection
+    "defunct"). A dropped connection isn't a data problem -- the underlying
+    HydraDB store is unaffected -- so on ServiceUnavailable/SessionExpired
+    this closes the stale driver, opens a fresh one, and retries."""
+    last_err: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            with get_driver().session(database=CONFIG.hydra_database) as session:
+                result = session.run(cypher, **params)
+                return [record.data() for record in result]
+        except (ServiceUnavailable, SessionExpired) as exc:
+            last_err = exc
+            close_driver()
+            time.sleep(min(2**attempt, 10))
+    raise RuntimeError(f"HydraDB connection kept dropping after {max_retries} retries: {last_err}")
 
 
 def run_write(cypher: str, **params: Any) -> list[dict]:
