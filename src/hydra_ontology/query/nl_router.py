@@ -32,6 +32,32 @@ Question: {question}
 """
 
 
+_STOP_WORDS = {
+    "who", "what", "why", "is", "the", "are", "was", "were", "did", "does",
+    "do", "how", "when", "where", "if", "at", "all",
+}
+
+
+def _extract_name(question: str) -> str | None:
+    """Picks the first run of consecutive capitalized, non-stop-word tokens
+    as a name candidate (so "Ibrahim Khan" is one phrase, and a
+    sentence-initial "Why"/"Who" doesn't get mistaken for a name)."""
+    words = question.replace("?", "").split()
+    runs: list[list[str]] = []
+    current: list[str] = []
+    for w in words:
+        clean = w.strip(",.:;'\"")
+        if clean and clean[0].isupper() and clean.lower() not in _STOP_WORDS:
+            current.append(clean)
+        else:
+            if current:
+                runs.append(current)
+            current = []
+    if current:
+        runs.append(current)
+    return " ".join(runs[0]) if runs else None
+
+
 def _keyword_fallback(question: str) -> dict:
     q = question.lower()
     key_match = _KEY_RE.search(question)
@@ -40,13 +66,14 @@ def _keyword_fallback(question: str) -> dict:
         template = "conflict"
     elif "merged" in q or "same person" in q or "same identity" in q:
         template = "merge_evidence"
-    elif "who reviewed" in q or "chain" in q or ("who" in q and " that " in q):
+    elif (
+        "who reviewed" in q or "chain" in q or "touched" in q
+        or "connected to" in q or ("who" in q and " that " in q)
+    ):
         template = "multi_hop"
     else:
         template = "lookup"
-    words = [w.strip("?,.:;'\"") for w in question.split()]
-    capitalized = [w for w in words if w[:1].isupper() and w.lower() not in ("who", "what", "is", "the")]
-    person_name = capitalized[0] if capitalized else None
+    person_name = _extract_name(question)
     return {"template": template, "key": key, "person_name": person_name}
 
 

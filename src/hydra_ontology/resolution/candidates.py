@@ -137,7 +137,16 @@ def _build_cooccurrence_index() -> dict[tuple[str, str], set[str]]:
     return expanded
 
 
-def generate_candidates(min_name_score: float = 0.45) -> list[Candidate]:
+def generate_candidates(min_name_score: float = 0.6, max_candidates: int = 200) -> list[Candidate]:
+    """min_name_score is deliberately stricter than an earlier version of
+    this function (0.45): confirmed live that 0.45 against ~1500 Person
+    nodes across 3 sources produced 7000+ candidates -- way more real
+    cross-source ambiguity than actually exists, mostly noise from short
+    common tokens (e.g. "eng", "sam") loosely matching many unrelated
+    names. max_candidates is a hard cap (top-scored kept) so a single LLM
+    call per candidate stays bounded regardless of how noisy the heuristic
+    still is -- each judgment call is rate-limited, so an uncapped list can
+    turn into a multi-hour run for no real benefit."""
     people = fetch_people()
     by_source: dict[str, list[PersonNode]] = {}
     for p in people:
@@ -165,4 +174,4 @@ def generate_candidates(min_name_score: float = 0.45) -> list[Candidate]:
         for a, b, score in prelim
     ]
     candidates.sort(key=lambda c: c.heuristic_score, reverse=True)
-    return candidates
+    return candidates[:max_candidates]
