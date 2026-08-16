@@ -8,6 +8,17 @@ against a real HydraDB server, not application-side fakery.
 
 Built for Hack Hydra (Aug 12–20, 2026), Track 1.
 
+**Contents:** [The problem](#the-problem) ·
+[What was built](#what-was-built) ·
+[Architecture](#architecture) ·
+[What HydraDB is doing here](#what-hydradb-is-doing-here-and-what-would-be-lost-without-it) ·
+[Ontology](#ontology) ·
+[Design decisions](#design-decisions) ·
+[Dataset](#dataset) · [LLM](#llm) ·
+[How to run](#how-to-run) · [Example run](#example-run) ·
+[Cypher subset note](#cypher-subset-note) · [Tests](#tests) ·
+[Credits](#credits)
+
 ## The problem
 
 Extraction is cheap now — any LLM can turn a Slack thread into structured
@@ -62,6 +73,83 @@ not hidden in application logic.
 - **CLI demo**: `python -m hydra_ontology.query.cli`, or `demo` inside it /
   `scripts/smoke.py` to run the four showcase questions non-interactively.
 
+## Architecture
+
+### Pipeline
+
+```mermaid
+flowchart LR
+    subgraph Sources["Raw sources"]
+        SL["Slack threads"]
+        GH["GitHub PR threads"]
+        JI["Jira tickets"]
+    end
+
+    SL --> EX
+    GH --> EX
+    JI --> EX
+
+    EX["Extraction (Gemini)<br/>people, primary entity,<br/>relationships, status_claim"] --> GB
+    GB["GraphBatch<br/>stages nodes/edges,<br/>flushes in batched UNWIND"] -->|MERGE on stable id| HDB[("HydraDB<br/>Bolt :7687")]
+
+    HDB --> RES["Entity resolution<br/>heuristic blocking<br/>+ Gemini judge"]
+    RES -->|"MERGED_FROM /<br/>SUGGESTED_SAME_AS"| HDB
+
+    HDB --> CD["Conflict detection<br/>Gemini judge on<br/>Claim status buckets"]
+    CD -->|CONTRADICTS| HDB
+
+    HDB --> QL["Query layer<br/>NL router + fixed<br/>Cypher templates"]
+    QL --> CLI["CLI"]
+```
+
+Each stage only runs once the previous one has real data to work with, per
+the brief's own sequencing: ingest one source end to end before adding the
+next, resolve entities only once there's cross-source ambiguity to resolve,
+detect conflicts only once resolution is in place.
+
+### Repository map
+
+```
+src/hydra_ontology/
+  config.py              env/.env loading
+  db.py                  Bolt driver + write primitives: stable_id(),
+                          upsert_node()/upsert_edge() (single-row),
+                          upsert_nodes_batch()/upsert_edges_batch() (bulk),
+                          automatic reconnect-and-retry on dropped connections
+  llm_client.py           Gemini wrapper -- the ONLY module that calls the
+                          LLM API, so the provider is swappable
+  ingest/
+    load_dataset.py        reads data/sample/<source>.jsonl
+    extract.py              LLM extraction schema (pydantic) + on-disk cache
+    write_graph.py           GraphBatch: stages a document's nodes/edges,
+                            flushed in bulk by pipeline.py
+  resolution/
+    candidates.py            heuristic blocking: name similarity (difflib)
+                            + graph co-occurrence, capped and scored
+    resolve.py                LLM judging + union-find clustering into
+                            canonical Person nodes, decision cache
+  conflicts/
+    detect.py                  Claim writing (about_ref-aware) + LLM-judged
+                            CONTRADICTS edges
+  query/
+    templates.py                fixed Cypher templates (lookup, multi-hop,
+                            conflict, merge-evidence)
+    nl_router.py                  NL question -> template + params
+                            (Gemini, with a keyword-only fallback)
+    cli.py                         REPL + non-interactive `demo`
+  pipeline.py                    orchestrates ingest -> resolve -> detect,
+                            used by scripts/smoke.py
+scripts/
+  download_dataset.py            pulls dataset slices from GitHub releases
+  sample_dataset.py                picks a coherent cross-referenced subset
+  smoke.py                          the definition-of-done entry point
+tests/                               unit tests, mocked LLM/DB, no live deps
+data/
+  sample/                             committed input subset (~550 docs)
+  extracted/                            committed LLM extraction/resolution
+                                      cache (see "How to run")
+```
+
 ## What HydraDB is doing here (and what would be lost without it)
 
 Every one of the three hard parts above is answered *as a graph query*, not
@@ -94,6 +182,38 @@ in application code:
 
 ## Ontology
 
+```mermaid
+graph LR
+    P["Person (raw)"]
+    C["Person (canonical)"]
+    T[Ticket]
+    PR[PullRequest]
+    M[Message]
+    R[Repo]
+    CL[Claim]
+
+    P -->|AUTHORED| PR
+    P -->|REPORTED| T
+    P -->|REPORTED| M
+    T -->|ASSIGNED_TO| P
+    PR -->|REVIEWED_BY| P
+    PR -->|RESOLVES| T
+    M -->|MENTIONS| T
+    M -->|MENTIONS| PR
+    PR -->|AUTHORED_IN| R
+    C -->|MERGED_FROM| P
+    P -.->|SUGGESTED_SAME_AS| P
+    CL -->|ABOUT| T
+    CL -.->|CONTRADICTS| CL
+```
+
+Solid arrows are asserted facts written straight from extraction; dashed
+arrows are the two "don't silently decide" edges this project is built
+around — a suggested-but-unmerged identity, and a flagged-but-unresolved
+contradiction.
+
+The precise node/edge shapes, property by property:
+
 ```
 (:Person {source, source_id, name, role_hint})        one per raw per-source identity
 (:Person {canonical:true, uid, name})                  canonical identity, only created when merged
@@ -121,6 +241,21 @@ in application code:
 
 Every node also carries a stable, deterministic integer `id` (derived from
 its natural key) — see "Cypher subset note" for why.
+
+## Design decisions
+
+Choices worth knowing the reasoning behind, in one line each:
+
+| Decision | Why |
+|---|---|
+| Deterministic `id`s (`hash(label, natural_key)`), never random | Re-running the pipeline on the same data is idempotent — every write is a `MERGE`, so nothing duplicates on a retry. Confirmed this matters live: an earlier version used `uuid4()` for canonical `Person`/`Claim` nodes and would have silently duplicated them on every re-run. |
+| Batched writes (`GraphBatch`) instead of one call per node/edge | ~15x faster (confirmed live: ~1.5s/row individually vs. ~0.1s/row batched) — the difference between the ~550-doc ingest finishing in minutes vs. hours. |
+| Committed LLM extraction/resolution cache under `data/extracted/` | A judge running this shouldn't need their own API key just to see real output — but every HydraDB write is still a live Cypher call against the live database, never faked. `--reextract`/`--reresolve` re-run the LLM calls live. |
+| One `llm_client.py` module, never called elsewhere | The brief suggests Claude; this build used Gemini. Swapping providers is a one-file change, not a refactor. |
+| `status_claim.about_ref` (a claim can be about a referenced entity, not just the document's own primary entity) | Without it, a Slack thread's status claim only ever attaches to its own `Message` node — which no Jira/GitHub claim ever shares — making cross-source conflicts structurally undetectable. Confirmed live: 0/543 claims shared an entity before this field existed; after it, real contradictions surfaced (e.g. `PR-8342`). |
+| `max_candidates` cap on entity-resolution pairs (bounded regardless of heuristic noise) | The heuristic name-similarity blocker alone produced 7,000+ candidate pairs against ~1,500 people (confirmed live) — far more real ambiguity than actually exists. Every judgment is a rate-limited LLM call, so an uncapped list turns a few-minute stage into a multi-hour one for no benefit. |
+| Automatic reconnect-and-retry in `db.run_query()` | This server's local-filesystem storage backend intermittently drops the Bolt connection during long write-heavy sessions (confirmed live, unrelated to the graph data). Retrying with a fresh driver kept multi-hundred-document runs from crashing mid-batch. |
+| No wipe-by-default (`wipe=False`) | Combined with deterministic ids, re-running is already safe. `DETACH DELETE` is also expensive on this engine (~1s/node, confirmed live) — resetting the Docker volume is the fast path to a genuinely clean slate. |
 
 ## Dataset
 
