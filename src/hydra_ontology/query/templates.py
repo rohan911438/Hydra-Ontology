@@ -94,6 +94,11 @@ def find_person(name_query: str) -> dict | None:
     nq = name_query.strip().lower()
     best, best_score = None, 0.0
     for r in rows:
+        # Canonical Person nodes (created by resolution) have no
+        # source/source_id -- only raw per-source identities do, and those
+        # are what every downstream Cypher call here is keyed on.
+        if not r.get("source_id"):
+            continue
         name = (r.get("name") or "").lower()
         if not name:
             continue
@@ -244,14 +249,28 @@ def merge_evidence(name_query: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _looks_like_person_name(name: str) -> bool:
+    """Extraction occasionally mislabels a product/company/channel as a
+    "person" (e.g. "LexiSearch" with a REPORTED edge). A real person's name
+    as written in this corpus is virtually always "First Last" (has a
+    space) or a lowercase handle; a single CamelCase word is the
+    tell-tale sign of a non-person slipping through."""
+    if " " in name:
+        return True
+    return name == name.lower() or name == name.upper()
+
+
 def discover_demo_anchors() -> dict:
-    reporter = run_query("MATCH (p:Person)-[:REPORTED]->(e) RETURN p.name AS name LIMIT 1")
-    if not reporter:
-        reporter = run_query("MATCH (p:Person)-[:AUTHORED]->(e) RETURN p.name AS name LIMIT 1")
+    reporter_candidates = run_query("MATCH (p:Person)-[:REPORTED]->(e) RETURN p.name AS name LIMIT 20")
+    if not reporter_candidates:
+        reporter_candidates = run_query("MATCH (p:Person)-[:AUTHORED]->(e) RETURN p.name AS name LIMIT 20")
+    reporter = next((r for r in reporter_candidates if _looks_like_person_name(r["name"])), None)
+    reporter = [reporter] if reporter else reporter_candidates[:1]
 
     merged = run_query(
         "MATCH (c:Person {canonical: true})-[:MERGED_FROM]->(p:Person) "
         "MATCH (c)-[:MERGED_FROM]->(p2:Person) "
+        "WHERE p.id <> p2.id "
         "RETURN p.name AS a, p2.name AS b LIMIT 1"
     )
 

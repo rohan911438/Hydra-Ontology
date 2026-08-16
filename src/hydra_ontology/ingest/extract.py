@@ -53,6 +53,15 @@ class RelMention(BaseModel):
 class StatusClaim(BaseModel):
     value: str
     note: str | None = None
+    # Which entity this claim is about: a ticket key / "PR-<n>" if the doc
+    # is asserting a status about something it REFERENCES (e.g. a Slack
+    # thread saying a ticket is still broken), or null to mean the primary
+    # entity itself. Without this, a Slack thread's claim only ever attaches
+    # to its own Message node -- which is never the SAME entity a Jira/GitHub
+    # doc's claim attaches to, making cross-source conflicts structurally
+    # impossible to detect (confirmed live: 0/543 claims shared an entity
+    # across sources before this field existed).
+    about_ref: str | None = None
 
 
 class PrimaryEntity(BaseModel):
@@ -93,7 +102,7 @@ markdown fences):
     {{"type": "BLOCKED_BY", "ref": "<ticket key or PR-<number> blocking this>"}},
     {{"type": "MENTIONS", "ref": "<any other ticket key or PR-<number> referenced>"}}
   ],
-  "status_claim": {{"value": "<e.g. done, resolved, in_progress, open, blocked, still broken, or null if the doc makes no status assertion>", "note": "<short quote or paraphrase backing this, or null>"}},
+  "status_claim": {{"value": "<e.g. done, resolved, in_progress, open, blocked, still broken, or null if the doc makes no status assertion>", "note": "<short quote or paraphrase backing this, or null>", "about_ref": "<ticket key or PR-<number> this status is about, if it's about something the doc REFERENCES rather than the doc's own primary_entity -- e.g. a Slack thread saying 'SUP-4127 is still broken' -- else null>"}},
   "mentioned_refs": ["<every distinct ticket key or PR-<number> mentioned anywhere in the doc, deduplicated>"]
 }}
 
@@ -103,6 +112,7 @@ Rules:
 - PR numbers must be written as "PR-<number>" (e.g. "PR-99501"). Ticket keys keep their natural form (e.g. "SUP-4127").
 - If the document is a Slack thread, its primary_entity.key is null and type is "Message".
 - If nothing supports a status_claim, set it to null.
+- status_claim.about_ref matters most for Slack threads: if the discussion asserts a status about a specific ticket/PR it references (not just the thread itself), set about_ref to that ticket key / PR-<number> so the claim attaches to the right entity. Leave it null when the claim is genuinely about the document's own primary entity (typical for Jira/GitHub docs).
 
 Document title: {title}
 Document body:

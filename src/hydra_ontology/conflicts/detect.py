@@ -44,9 +44,17 @@ def write_status_claims(
 ) -> None:
     if extraction.status_claim is None:
         return
+    # A claim attaches to the entity it's actually ABOUT: usually the
+    # document's own primary entity, but a Slack thread often asserts a
+    # status about a ticket/PR it merely references (about_ref) -- without
+    # this, Slack claims only ever land on their own Message node, which no
+    # other source's claim ever shares, making cross-source conflicts
+    # structurally undetectable regardless of how good the LLM judging is.
+    if extraction.status_claim.about_ref:
+        entity_label, entity_id = batch.merge_entity_by_key(extraction.status_claim.about_ref, "Ticket")
     # Deterministic from (source, doc_id, entity) -- a document makes at most
-    # one status claim about its primary entity -- so re-ingesting the same
-    # document doesn't create a duplicate Claim node each run.
+    # one status claim -- so re-ingesting the same document doesn't create a
+    # duplicate Claim node each run.
     claim_uid = f"claim:{doc['source']}:{doc['doc_id']}:{entity_id}"
     claim_id = stable_id("claim", claim_uid)
     batch.add_node(

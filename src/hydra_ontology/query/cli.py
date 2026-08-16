@@ -27,7 +27,8 @@ def _build_demo_questions() -> list[tuple[str, str]]:
 
     if anchors["merged_pair"]:
         a, b = anchors["merged_pair"]
-        questions.append(("entity-merge evidence", f"Why were {a} and {b} merged, if at all?"))
+        phrase = a if a == b else f"{a} and {b}"
+        questions.append(("entity-merge evidence", f"Why were the identities behind {phrase} merged, if at all?"))
     else:
         questions.append(("entity-merge evidence (no merge in this ingest)", "Why were X and Y merged, if at all?"))
 
