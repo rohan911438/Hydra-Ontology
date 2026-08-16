@@ -8,12 +8,6 @@ against a real HydraDB server, not application-side fakery.
 
 Built for Hack Hydra (Aug 12–20, 2026), Track 1.
 
-**Benchmark:** 20/20 correct on EnterpriseRAG-Bench's official
-`info_not_found` questions — real abstention, graded against a real run, not
-estimated. See [Benchmark results](#benchmark-results) for the full
-methodology, including a negative finding reported honestly rather than
-hidden.
-
 **Contents:** [The problem](#the-problem) ·
 [What was built](#what-was-built) ·
 [Architecture](#architecture) ·
